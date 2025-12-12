@@ -1,24 +1,96 @@
+
 name: EC2 Git Pull & Restart
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
+
+concurrency:
+  group: deploy-ec2-main
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      APP_DIR: /home/${{ secrets.EC2_USER }}/flask-guni-ec2
+      SERVICE_NAME: flaskapp
+      BRANCH: main
+      HEALTH_URL: http://127.0.0.1:8000/health
 
     steps:
-    - name: SSH into EC2 and deploy
-      uses: appleboy/ssh-action@master
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ubuntu
-        key: ${{ secrets.EC2_KEY }}
-        script: |
-          cd /home/ubuntu/flask-guni-ec2
-          git pull origin main
-          pip3 install -r requirements.txt
-          sudo systemctl restart flaskapp
+      - name: Checkout (metadata only)
+        uses: actions/checkout@v4
 
+      - name: Add EC2 host to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: SSH into EC2 and deploy
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}         # <-- using your secret
+          key: ${{ secrets.EC2_KEY }}
+          # port: ${{ secrets.EC2_PORT }}           # optional, if you use a non-standard port
+          script_stop: true
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+
+            echo "==> App dir: $APP_DIR"
+            test -d "$APP_DIR" || { echo "App dir not found: $APP_DIR"; exit 1; }
+            cd "$APP_DIR"
+
+            echo "==> Git fetch & hard reset to origin/${BRANCH}"
+            git fetch --all --prune
+            PREV_COMMIT="$(git rev-parse HEAD || echo unknown)"
+            git checkout "${BRANCH}" || true
+            git reset --hard "origin/${BRANCH}"
+
+            echo "==> Ensure virtualenv"
+            VENV_DIR="${APP_DIR}/.venv"
+            if [ ! -d "$VENV_DIR" ]; then
+              python3 -m venv "$VENV_DIR"
+            fi
+            source "$VENV_DIR/bin/activate"
+
+            echo "==> Upgrade pip & install deps"
+            python -m pip install --upgrade pip
+            if [ -f "requirements.txt" ]; then
+              pip install -r requirements.txt
+            else
+              echo "requirements.txt missing; skipping"
+            fi
+
+            echo "==> Restart service: ${SERVICE_NAME}"
+            sudo systemctl daemon-reload || true
+            sudo systemctl restart "${SERVICE_NAME}"
+
+            echo "==> Check service status"
+            if ! sudo systemctl is-active --quiet "${SERVICE_NAME}"; then
+              echo "Service failed. Logs:"
+              sudo journalctl -u "${SERVICE_NAME}" -n 200 --no-pager || true
+              echo "Rollback to previous commit: ${PREV_COMMIT}"
+              git reset --hard "${PREV_COMMIT}" || true
+              sudo systemctl restart "${SERVICE_NAME}" || true
+              exit 1
+            fi
+
+            echo "==> Health check (optional)"
+            if command -v curl >/dev/null 2>&1; then
+              for i in {1..10}; do
+                if curl -fsS "$HEALTH_URL" >/dev/null; then
+                  echo "Health OK"
+                  break
+                fi
+                echo "Waiting for health... ($i/10)"
+                sleep 3
+              done
+            fi
+
+            echo "==> Tail logs"
+            sudo journalctl -u "${SERVICE_NAME}" -n 100 --no-pager || true
