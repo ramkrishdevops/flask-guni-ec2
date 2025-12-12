@@ -1,24 +1,43 @@
-name: EC2 Git Pull & Restart
 
+name: Deploy Flask App (EC2 + CodeDeploy + Teams)
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch: {}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
-    - name: SSH into EC2 and deploy
-      uses: appleboy/ssh-action@master
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ubuntu
-        key: ${{ secrets.EC2_KEY }}
-        script: |
-          cd /home/ubuntu/flask-guni-ec2
-          git pull origin main
-          pip3 install -r requirements.txt
-          sudo systemctl restart flaskapp
+      - uses: actions/checkout@v4
 
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Zip repository as CodeDeploy bundle
+        run: |
+          zip -r app.zip .
+
+      - name: Upload bundle to S3
+        run: |
+          aws s3 cp app.zip s3://${{ secrets.CD_S3_BUCKET }}/app-${{ github.sha }}.zip
+
+      - name: Create CodeDeploy deployment
+        run: |
+          aws deploy create-deployment \
+            --application-name flask-app \
+            --deployment-group-name staging-dg \
+            --revision revisionType=S3,s3Location={bucket=${{ secrets.CD_S3_BUCKET }},key=app-${{ github.sha }}.zip,bundleType=zip}
+
+      - name: Notify Microsoft Teams
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          curl -H 'Content-Type: application/json' \
+               -d "{\"text\":\"🚀 Deployment triggered for Flask app (sha: $GITHUB_SHA)\"}" \
+               "$

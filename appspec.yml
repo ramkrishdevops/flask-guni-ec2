@@ -1,0 +1,24 @@
+
+version: 0.0
+os: linux
+files:
+  - source: .
+    destination: /home/ubuntu/flask-guni-ec2
+hooks:
+  BeforeInstall:
+    - location: scripts/service.sh
+      runas: root
+      args: ["stop"]
+  AfterInstall:
+    - location: scripts/service.sh
+      runas: root
+      args: ["install"]
+  ApplicationStart:
+    - location: scripts/service.sh
+      runas: root
+      args: ["start"]
+  ValidateService:
+    - location: scripts/service.sh
+      runas: root
+      args: ["health"]
+``
