@@ -1,4 +1,3 @@
-
 version: 0.0
 os: linux
 files:
@@ -21,4 +20,3 @@ hooks:
     - location: scripts/service.sh
       runas: root
       args: ["health"]
-``

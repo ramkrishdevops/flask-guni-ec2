@@ -1,43 +1,38 @@
+name: Deploy Flask App (EC2 + systemd + Teams)
 
-name: Deploy Flask App (EC2 + CodeDeploy + Teams)
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ap-south-1
-
-      - name: Zip repository as CodeDeploy bundle
-        run: |
-          zip -r app.zip .
-
-      - name: Upload bundle to S3
-        run: |
-          aws s3 cp app.zip s3://${{ secrets.CD_S3_BUCKET }}/app-${{ github.sha }}.zip
-
-      - name: Create CodeDeploy deployment
-        run: |
-          aws deploy create-deployment \
-            --application-name flask-app \
-            --deployment-group-name staging-dg \
-            --revision revisionType=S3,s3Location={bucket=${{ secrets.CD_S3_BUCKET }},key=app-${{ github.sha }}.zip,bundleType=zip}
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/ubuntu/flask-guni-ec2
+            git pull origin main
+            source venv/bin/activate
+            pip install -r requirements.txt
+            sudo systemctl restart flaskapp
+            curl -f http://localhost:8000/health
 
       - name: Notify Microsoft Teams
+        if: success()
         env:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
-          curl -H 'Content-Type: application/json' \
-               -d "{\"text\":\"🚀 Deployment triggered for Flask app (sha: $GITHUB_SHA)\"}" \
-               "$
+          curl -H "Content-Type: application/json" \
+               -d "{\"text\":
+
