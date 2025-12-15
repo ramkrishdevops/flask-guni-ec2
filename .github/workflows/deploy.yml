@@ -19,20 +19,34 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_KEY }}
+          port: 22
           script: |
             set -e
             cd /home/ubuntu/flask-guni-ec2
-            git pull origin main
+
+            echo "🔄 Syncing code"
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "📦 Installing dependencies"
             source venv/bin/activate
             pip install -r requirements.txt
+
+            echo "🚀 Restarting Flask service"
+            sudo systemctl daemon-reload
             sudo systemctl restart flaskapp
-            curl -f http://localhost:8000/health
 
-      - name: Notify Microsoft Teams
-        if: success()
-        env:
-          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-        run: |
-          curl -H "Content-Type: application/json" \
-               -d "{\"text\":
+            echo "⏳ Waiting for app health"
+            for i in {1..10}; do
+              if curl -fsS http://localhost:8000/health > /dev/null; then
+                echo "✅ App is healthy"
+                exit 0
+              fi
+              echo "⏳ App not ready yet..."
+              sleep 3
+            done
 
+            echo "❌ App failed to start"
+            sudo systemctl status flaskapp --no-pager
+            sudo journalctl -u flaskapp --no-pager -n 50
+            exit 1
