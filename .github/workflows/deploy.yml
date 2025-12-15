@@ -22,6 +22,7 @@ jobs:
           port: 22
           script: |
             set -e
+
             cd /home/ubuntu/flask-guni-ec2
 
             echo "🔄 Syncing code"
@@ -50,3 +51,25 @@ jobs:
             sudo systemctl status flaskapp --no-pager
             sudo journalctl -u flaskapp --no-pager -n 50
             exit 1
+
+      - name: Notify Microsoft Teams (Always)
+        if: always()
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          STATUS="${{ job.status }}"
+
+          if [ "$STATUS" = "success" ]; then
+            ICON="✅"
+          elif [ "$STATUS" = "failure" ]; then
+            ICON="❌"
+          else
+            ICON="⚠️"
+          fi
+
+          curl -H "Content-Type: application/json" \
+               -d "{
+                     \"text\": \"${ICON} *Flask EC2 Deployment Status*: ${STATUS}\nCommit: $GITHUB_SHA\nRepo: $GITHUB_REPOSITORY\"
+                   }" \
+               "$TEAMS_WEBHOOK_URL"
+
