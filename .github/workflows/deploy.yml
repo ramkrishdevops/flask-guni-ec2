@@ -64,11 +64,11 @@ jobs:
             sudo journalctl -u flaskapp --no-pager -n 50
             exit 1
 
-      # 🔥 Intentional failure for PoC testing
-      - name: Intentional Failure (PoC)
-        run: |
-          echo "❌ Forcing pipeline failure for DevOps Agent test"
-          exit 1
+#      # 🔥 Intentional failure for PoC testing
+#      - name: Intentional Failure (PoC)
+#        run: |
+#          echo "❌ Forcing pipeline failure for DevOps Agent test"
+#          exit 1
 
       # 🔑 Update Deployment Status (success)
       - name: Update GitHub Deployment Status (success)
