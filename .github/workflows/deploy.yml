@@ -11,7 +11,7 @@ jobs:
 
     permissions:
       contents: read
-      deployments: write   # REQUIRED for GitHub Deployment API
+      deployments: write   # REQUIRED
 
     steps:
       # -------------------------
@@ -22,7 +22,6 @@ jobs:
 
       # -------------------------
       # Create GitHub Deployment
-      # (This is what DevOps Agent listens to)
       # -------------------------
       - name: Create GitHub Deployment
         id: create_deployment
@@ -75,31 +74,31 @@ jobs:
             exit 1
 
       # -------------------------
-      # Update Deployment Status: SUCCESS
+      # Deployment Status: SUCCESS
       # -------------------------
       - name: Update GitHub Deployment Status (success)
         if: success()
         uses: chrnorm/deployment-status@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          deployment_id: ${{ steps.create_deployment.outputs.deployment_id }}
+          deployment-id: ${{ steps.create_deployment.outputs.deployment-id }}
           state: success
           description: "Deployment completed successfully"
 
       # -------------------------
-      # Update Deployment Status: FAILURE
+      # Deployment Status: FAILURE
       # -------------------------
       - name: Update GitHub Deployment Status (failure)
         if: failure()
         uses: chrnorm/deployment-status@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          deployment_id: ${{ steps.create_deployment.outputs.deployment_id }}
+          deployment-id: ${{ steps.create_deployment.outputs.deployment-id }}
           state: failure
           description: "Deployment failed"
 
       # -------------------------
-      # Microsoft Teams Notification (Always)
+      # Microsoft Teams Notification
       # -------------------------
       - name: Notify Microsoft Teams
         if: always()
