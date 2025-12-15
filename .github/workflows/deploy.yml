@@ -5,6 +5,10 @@ on:
   push:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+  deployments: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -12,6 +16,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # 🔑 Create GitHub Deployment (for AWS DevOps Agent)
+      - name: Create GitHub Deployment
+        uses: chrnorm/deployment-action@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          environment: production
+          description: "Flask EC2 deployment via GitHub Actions"
 
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1
@@ -52,6 +64,29 @@ jobs:
             sudo journalctl -u flaskapp --no-pager -n 50
             exit 1
 
+      # 🔥 Intentional failure for PoC testing
+      - name: Intentional Failure (PoC)
+        run: |
+          echo "❌ Forcing pipeline failure for DevOps Agent test"
+          exit 1
+
+      # 🔑 Update Deployment Status (success)
+      - name: Update GitHub Deployment Status (success)
+        if: success()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          state: success
+
+      # 🔑 Update Deployment Status (failure)
+      - name: Update GitHub Deployment Status (failure)
+        if: failure()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          state: failure
+
+      # 🔔 Teams notification (Always)
       - name: Notify Microsoft Teams (Always)
         if: always()
         env:
