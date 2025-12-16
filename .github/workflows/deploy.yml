@@ -1,3 +1,4 @@
+
 name: Deploy Flask App (EC2 + systemd + Teams)
 
 on:
@@ -9,115 +10,151 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
+    # Needed to create and update GitHub Deployment + Status
     permissions:
       contents: read
-      deployments: write   # REQUIRED
+      deployments: write
+
+    env:
+      APP_DIR: /home/${{ secrets.EC2_USER }}/flask-guni-ec2
+      SERVICE_NAME: flaskapp
+      HEALTH_URL: http://127.0.0.1:8000/health
+      BRANCH: main
 
     steps:
-      # -------------------------
+      # ---------------------------
       # Checkout
-      # -------------------------
+      # ---------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # -------------------------
-      # Create GitHub Deployment
-      # -------------------------
+      # ---------------------------
+      # Create GitHub Deployment (stable via GitHub API)
+      # ---------------------------
       - name: Create GitHub Deployment
         id: create_deployment
-        uses: chrnorm/deployment-action@v2
+        uses: actions/github-script@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          environment: production
-          description: "Flask EC2 deployment via GitHub Actions"
+          script: |
+            const resp = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: "production",
+              auto_merge: false,
+              required_contexts: [], // allow immediate status
+              description: "Flask EC2 deployment via GitHub Actions",
+              transient_environment: false,
+              production_environment: true
+            });
+            core.setOutput('deployment_id', resp.data.id);
 
-      # -------------------------
-      # Deploy to EC2
-      # -------------------------
+      # ---------------------------
+      # Add EC2 to known_hosts (avoid prompts)
+      # ---------------------------
+      - name: Add EC2 host to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      # ---------------------------
+      # Deploy to EC2 via SSH (pin stable version + robust venv usage)
+      # ---------------------------
       - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v1
+        id: ssh_deploy
+        uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
+          username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           port: 22
+          script_stop: true
+          command_timeout: 20m
           script: |
-            set -e
+            set -euo pipefail
 
-            cd /home/ubuntu/flask-guni-ec2
+            cd "${{ env.APP_DIR }}"
 
             echo "🔄 Syncing code"
-            git fetch origin
-            git reset --hard origin/main
+            git fetch --all --prune
+            git checkout "${{ env.BRANCH }}" || true
+            git reset --hard "origin/${{ env.BRANCH }}"
 
-            echo "📦 Installing dependencies"
-            source venv/bin/activate
-            pip install -r requirements.txt
+            echo "📦 Ensuring venv + dependencies"
+            VENV="${{ env.APP_DIR }}/venv"
+            if [ ! -d "$VENV" ]; then
+              python3 -m venv "$VENV"
+            fi
+
+            # Use venv python directly (no 'source' needed)
+            "$VENV/bin/python" -m pip install --upgrade pip
+            "$VENV/bin/python" -m pip install -r requirements.txt
 
             echo "🚀 Restarting Flask service"
-            sudo systemctl daemon-reload
-            sudo systemctl restart flaskapp
+            sudo systemctl daemon-reload || true
+            sudo systemctl restart "${{ env.SERVICE_NAME }}"
 
-            echo "⏳ Waiting for app health"
-            for i in {1..15}; do
-              if curl -fsS http://localhost:8000/health > /dev/null; then
-                echo "✅ App is healthy"
-                exit 0
-              fi
-              echo "⏳ App not ready yet..."
-              sleep 3
-            done
+            echo "🔎 Service status"
+            if ! sudo systemctl is-active --quiet "${{ env.SERVICE_NAME }}"; then
+              echo "❌ Service failed to start; last logs:"
+              sudo journalctl -u "${{ env.SERVICE_NAME }}" -n 200 --no-pager || true
+              exit 1
+            fi
 
-            echo "❌ App failed to start"
-            sudo systemctl status flaskapp --no-pager
-            sudo journalctl -u flaskapp --no-pager -n 50
-            exit 1
+            echo "⏳ Health check (if route exists)"
+            if command -v curl >/dev/null 2>&1; then
+              for i in {1..15}; do
+                if curl -fsS "${{ env.HEALTH_URL }}" >/dev/null; then
+                  echo "✅ App is healthy"; break
+                fi
+                echo "⏳ App not ready yet..."
+                sleep 2
+              done
+            else
+              echo "curl not installed; skipping health check"
+            fi
 
-      # -------------------------
-      # Deployment Status: SUCCESS
-      # -------------------------
-      - name: Update GitHub Deployment Status (success)
-        if: success()
-        uses: chrnorm/deployment-status@v2
+            echo "📄 Tail last logs"
+            sudo journalctl -u "${{ env.SERVICE_NAME }}" -n 80 --no-pager || true
+
+      # ---------------------------
+      # Update Deployment Status: SUCCESS/FAILURE
+      # ---------------------------
+      - name: Update GitHub Deployment Status
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          DEPLOYMENT_ID: ${{ steps.create_deployment.outputs.deployment_id }}
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          deployment-id: ${{ steps.create_deployment.outputs.deployment-id }}
-          state: success
-          description: "Deployment completed successfully"
+          script: |
+            const status = (core.getInput('job_status') || '${{ job.status }}').toLowerCase();
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: parseInt(process.env.DEPLOYMENT_ID, 10),
+              state: status === 'success' ? 'success' : 'failure',
+              log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              environment: "production",
+              auto_inactive: false,
+              description: `Flask EC2 deployment ${status}`
+            });
 
-      # -------------------------
-      # Deployment Status: FAILURE
-      # -------------------------
-      - name: Update GitHub Deployment Status (failure)
-        if: failure()
-        uses: chrnorm/deployment-status@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          deployment-id: ${{ steps.create_deployment.outputs.deployment-id }}
-          state: failure
-          description: "Deployment failed"
-
-      # -------------------------
-      # Microsoft Teams Notification
-      # -------------------------
+      # ---------------------------
+      # Microsoft Teams Notification (ALWAYS)
+      # ---------------------------
       - name: Notify Microsoft Teams
         if: always()
         env:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           STATUS="${{ job.status }}"
+          ICON="⚠️"
+          [ "$STATUS" = "success" ] && ICON="✅"
+          [ "$STATUS" = "failure" ] && ICON="❌"
 
-          if [ "$STATUS" = "success" ]; then
-            ICON="✅"
-          elif [ "$STATUS" = "failure" ]; then
-            ICON="❌"
-          else
-            ICON="⚠️"
-          fi
+          LOG_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG="${          MSG="${ICON} Flask EC2 Deployment: ${STATUS}\nRepo: ${{ github.repository }}\nCommit: $GITHUB_SHA\nLogs: ${LOG_URL}"
 
-          curl -H "Content-Type: application/json" \
-               -d "{
-                     \"text\": \"${ICON} *Flask EC2 Deployment*: ${STATUS}\nCommit: $GITHUB_SHA\nRepo: $GITHUB_REPOSITORY\"
-                   }" \
-               "$TEAMS_WEBHOOK_URL"
+          curl -sS -H "Content-Type: application/json" \
+               -d "{\"text\": \"${MSG}\"}" \
 
